@@ -370,9 +370,16 @@ class _Domains:
 # ═══════════════════════════════════════════════════════════════
 
 def _ds(h5, path, data, version=0):
-    """Dataset olustur ve version attribute ekle."""
+    """Dataset olustur, version attribute ekle ve INDEX mirror'u olustur."""
     ds = h5.create_dataset(path, data=data)
     ds.attrs['version'] = np.int64(version)
+    # INPUT datasetleri icin INDEX mirror tablosu olustur
+    index_path = f'/INDEX{path}'
+    if index_path not in h5:
+        n = len(data) if hasattr(data, '__len__') else 1
+        idx = np.array([(1, 0, n)], dtype=INDEX_DTYPE)
+        ids = h5.create_dataset(index_path, data=idx)
+        ids.attrs['version'] = np.int64(0)
     return ds
 
 
@@ -680,6 +687,51 @@ def _write_input_materials(h5, op2, _log):
                 arr[i]['SC'] = getattr(m, 'Sc', 0.0) or 0.0
                 arr[i]['SS'] = getattr(m, 'Ss', 0.0) or 0.0
                 arr[i]['MCSID'] = getattr(m, 'mcsid', 0)
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif mtype == 'MAT2':
+            arr = np.zeros(n, dtype=MAT2_DTYPE)
+            for i, m in enumerate(mats_sorted):
+                arr[i]['MID'] = m.mid
+                arr[i]['G11'] = getattr(m, 'G11', 0.0) or 0.0
+                arr[i]['G12'] = getattr(m, 'G12', 0.0) or 0.0
+                arr[i]['G13'] = getattr(m, 'G13', 0.0) or 0.0
+                arr[i]['G22'] = getattr(m, 'G22', 0.0) or 0.0
+                arr[i]['G23'] = getattr(m, 'G23', 0.0) or 0.0
+                arr[i]['G33'] = getattr(m, 'G33', 0.0) or 0.0
+                arr[i]['RHO'] = getattr(m, 'rho', 0.0) or 0.0
+                arr[i]['A1'] = getattr(m, 'a1', 0.0) or 0.0
+                arr[i]['A2'] = getattr(m, 'a2', 0.0) or 0.0
+                arr[i]['A12'] = getattr(m, 'a12', 0.0) or 0.0
+                arr[i]['TREF'] = getattr(m, 'tref', 0.0) or 0.0
+                arr[i]['GE'] = getattr(m, 'ge', 0.0) or 0.0
+                arr[i]['ST'] = getattr(m, 'St', 0.0) or 0.0
+                arr[i]['SC'] = getattr(m, 'Sc', 0.0) or 0.0
+                arr[i]['SS'] = getattr(m, 'Ss', 0.0) or 0.0
+                arr[i]['MCSID'] = getattr(m, 'mcsid', 0)
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif mtype == 'MAT8':
+            arr = np.zeros(n, dtype=MAT8_DTYPE)
+            for i, m in enumerate(mats_sorted):
+                arr[i]['MID'] = m.mid
+                arr[i]['E1'] = getattr(m, 'e11', 0.0) or 0.0
+                arr[i]['E2'] = getattr(m, 'e22', 0.0) or 0.0
+                arr[i]['NU12'] = getattr(m, 'nu12', 0.0) or 0.0
+                arr[i]['G12'] = getattr(m, 'g12', 0.0) or 0.0
+                arr[i]['G1Z'] = getattr(m, 'g1z', 0.0) or 0.0
+                arr[i]['G2Z'] = getattr(m, 'g2z', 0.0) or 0.0
+                arr[i]['RHO'] = getattr(m, 'rho', 0.0) or 0.0
+                arr[i]['A1'] = getattr(m, 'a1', 0.0) or 0.0
+                arr[i]['A2'] = getattr(m, 'a2', 0.0) or 0.0
+                arr[i]['TREF'] = getattr(m, 'tref', 0.0) or 0.0
+                arr[i]['GE'] = getattr(m, 'ge', 0.0) or 0.0
+                arr[i]['XT'] = getattr(m, 'Xt', 0.0) or 0.0
+                arr[i]['XC'] = getattr(m, 'Xc', 0.0) or 0.0
+                arr[i]['YT'] = getattr(m, 'Yt', 0.0) or 0.0
+                arr[i]['YC'] = getattr(m, 'Yc', 0.0) or 0.0
+                arr[i]['S'] = getattr(m, 'S', 0.0) or 0.0
+                arr[i]['F12'] = getattr(m, 'f12', 0.0) or 0.0
                 arr[i]['DOMAIN_ID'] = 1
         else:
             continue
@@ -1064,6 +1116,21 @@ def write_msc_h5(op2, h5_path, log=None):
                 if rdict:
                     _log(f'    Elemental/{category}/{elem}: {len(rdict)} subcase')
                     _write_plate_stress(h5, elem, rdict, dom, category)
+
+            # QUAD_CN (corner stress/strain)
+            if category == 'STRESS':
+                quad4_rdict = getattr(op2, f'cquad4_{cl}', {})
+                has_corner = False
+                for _sc, _res in quad4_rdict.items():
+                    nn = getattr(_res, 'nnodes_per_element', None)
+                    if nn is None:
+                        nn = getattr(_res, 'nnodes', 1)
+                    if nn > 1:
+                        has_corner = True
+                        break
+                if has_corner:
+                    _log(f'    Elemental/{category}/QUAD_CN: corner stress')
+                    _write_quad_cn_stress(h5, quad4_rdict, dom, category)
 
             # 1D
             for elem, attr, dtype, cols in [
