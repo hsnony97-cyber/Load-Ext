@@ -1,8 +1,19 @@
 """
-OP2 to HDF5 Converter - MSC Nastran Native Format
-==================================================
+OP2 to HDF5 Converter - MSC Nastran Native Format (Patran Compatible)
+=====================================================================
 MSC Nastran OP2 dosyalarini MSC Nastran native HDF5 (.h5) formatina
-donusturen masaustu arayuzu.  Tek dosya - harici modül gerektirmez.
+donusturen masaustu arayuzu.  Tek dosya - harici modul gerektirmez.
+
+Patran uyumlulugu icin asagidaki ogeleri icerir:
+  - Root SCHEMA attribute
+  - Her dataset'te version attribute
+  - /NASTRAN/INPUT/NODE/GRID         (dugum noktasi geometrisi)
+  - /NASTRAN/INPUT/ELEMENT/{type}    (eleman baglantilari)
+  - /NASTRAN/INPUT/PROPERTY/{type}   (ozellik kartlari)
+  - /NASTRAN/INPUT/MATERIAL/{type}   (malzeme kartlari)
+  - /NASTRAN/INPUT/DOMAINS           (giris domain tablosu)
+  - /NASTRAN/RESULT/SUMMARY/EIGENVALUE  (modal analiz ozet)
+  - /INDEX/... mirror agaci
 
 Kullanim:
     python op2_to_h5_gui.py
@@ -21,6 +32,12 @@ from pyNastran.op2.op2 import OP2
 
 
 # ═══════════════════════════════════════════════════════════════
+#  Sabitler
+# ═══════════════════════════════════════════════════════════════
+
+MSC_SCHEMA_VERSION = np.int64(20182)
+
+# ═══════════════════════════════════════════════════════════════
 #  MSC Nastran HDF5 dtype tanimlari
 # ═══════════════════════════════════════════════════════════════
 
@@ -32,6 +49,11 @@ DOMAIN_DTYPE = np.dtype([
     ('INSTANCE', '<i8'), ('MODULE', '<i8'),
 ])
 
+INPUT_DOMAIN_DTYPE = np.dtype([
+    ('ID', '<i8'), ('SE', '<i8'), ('AFPM', '<i8'),
+    ('TRMC', '<i8'), ('MODULE', '<i8'),
+])
+
 INDEX_DTYPE = np.dtype([
     ('DOMAIN_ID', '<i8'), ('POSITION', '<i8'), ('LENGTH', '<i8'),
 ])
@@ -41,6 +63,21 @@ NODAL_DTYPE = np.dtype([
     ('RX', '<f8'), ('RY', '<f8'), ('RZ', '<f8'), ('DOMAIN_ID', '<i8'),
 ])
 
+# --- INPUT/NODE/GRID ---
+GRID_DTYPE = np.dtype([
+    ('ID', '<i8'), ('CP', '<i8'), ('X', '<f8', (3,)),
+    ('CD', '<i8'), ('PS', '<i8'), ('SEID', '<i8'), ('DOMAIN_ID', '<i8'),
+])
+
+# --- Eigenvalue summary ---
+EIGENVALUE_DTYPE = np.dtype([
+    ('MODE', '<i8'), ('ORDER', '<i8'), ('EIGEN', '<f8'),
+    ('OMEGA', '<f8'), ('FREQ', '<f8'), ('MASS', '<f8'),
+    ('STIFF', '<f8'), ('RESFLG', '<i8'), ('FLDFLG', '<i8'),
+    ('DOMAIN_ID', '<i8'),
+])
+
+# --- Plate stress/strain ---
 PLATE_STRESS_DTYPE = np.dtype([
     ('EID', '<i8'),
     ('FD1', '<f8'), ('X1', '<f8'), ('Y1', '<f8'), ('XY1', '<f8'),
@@ -54,6 +91,14 @@ BAR_STRESS_DTYPE = np.dtype([
     ('AX', '<f8'), ('MAXA', '<f8'), ('MINA', '<f8'), ('MST', '<f8'),
     ('X1B', '<f8'), ('X2B', '<f8'), ('X3B', '<f8'), ('X4B', '<f8'),
     ('MAXB', '<f8'), ('MINB', '<f8'), ('MSC', '<f8'),
+    ('DOMAIN_ID', '<i8'),
+])
+
+BEAM_STRESS_DTYPE = np.dtype([
+    ('EID', '<i8'), ('NID', '<i8'),
+    ('LONG', '<f8'), ('LS1', '<f8'), ('LS2', '<f8'),
+    ('LS3', '<f8'), ('LS4', '<f8'),
+    ('SMAX', '<f8'), ('SMIN', '<f8'),
     ('DOMAIN_ID', '<i8'),
 ])
 
@@ -88,6 +133,16 @@ BAR_FORCE_DTYPE = np.dtype([
     ('EID', '<i8'),
     ('BM1A', '<f8'), ('BM2A', '<f8'), ('BM1B', '<f8'), ('BM2B', '<f8'),
     ('TS1', '<f8'), ('TS2', '<f8'), ('AF', '<f8'), ('TRQ', '<f8'),
+    ('DOMAIN_ID', '<i8'),
+])
+
+BEAM_FORCE_DTYPE = np.dtype([
+    ('EID', '<i8'), ('NIDA', '<i8'),
+    ('BM1A', '<f8'), ('BM2A', '<f8'), ('TS1A', '<f8'), ('TS2A', '<f8'),
+    ('AFA', '<f8'), ('TRQA', '<f8'),
+    ('NIDB', '<i8'),
+    ('BM1B', '<f8'), ('BM2B', '<f8'), ('TS1B', '<f8'), ('TS2B', '<f8'),
+    ('AFB', '<f8'), ('TRQB', '<f8'),
     ('DOMAIN_ID', '<i8'),
 ])
 
@@ -134,6 +189,107 @@ QUAD4_FORCE_COLS = [
 
 
 # ═══════════════════════════════════════════════════════════════
+#  INPUT element dtype haritasi (pyNastran card_name -> HDF5)
+# ═══════════════════════════════════════════════════════════════
+
+def _elem_dtype(nnodes):
+    """Genel eleman dtype'i: EID, PID, G(nnodes), DOMAIN_ID."""
+    return np.dtype([
+        ('EID', '<i8'), ('PID', '<i8'),
+        ('G', '<i8', (nnodes,)),
+        ('DOMAIN_ID', '<i8'),
+    ])
+
+# CQUAD4 ve CTRIA3 ozel alanlar iceriyor
+CQUAD4_INPUT_DTYPE = np.dtype([
+    ('EID', '<i8'), ('PID', '<i8'), ('G', '<i8', (4,)),
+    ('THETA', '<f8'), ('ZOFFS', '<f8'), ('TFLAG', '<i8'),
+    ('T', '<f8', (4,)), ('MCID', '<i8'), ('DOMAIN_ID', '<i8'),
+])
+
+CTRIA3_INPUT_DTYPE = np.dtype([
+    ('EID', '<i8'), ('PID', '<i8'), ('G', '<i8', (3,)),
+    ('THETA', '<f8'), ('ZOFFS', '<f8'), ('TFLAG', '<i8'),
+    ('T', '<f8', (3,)), ('MCID', '<i8'), ('DOMAIN_ID', '<i8'),
+])
+
+
+# ═══════════════════════════════════════════════════════════════
+#  INPUT property dtype haritasi
+# ═══════════════════════════════════════════════════════════════
+
+PROD_DTYPE = np.dtype([
+    ('PID', '<i8'), ('MID', '<i8'), ('A', '<f8'), ('J', '<f8'),
+    ('C', '<f8'), ('NSM', '<f8'), ('DOMAIN_ID', '<i8'),
+])
+
+PBAR_DTYPE = np.dtype([
+    ('PID', '<i8'), ('MID', '<i8'), ('A', '<f8'),
+    ('I1', '<f8'), ('I2', '<f8'), ('J', '<f8'), ('NSM', '<f8'),
+    ('DOMAIN_ID', '<i8'),
+])
+
+PBEAM_DTYPE = np.dtype([
+    ('PID', '<i8'), ('MID', '<i8'), ('A', '<f8'),
+    ('I1', '<f8'), ('I2', '<f8'), ('I12', '<f8'),
+    ('J', '<f8'), ('NSM', '<f8'),
+    ('DOMAIN_ID', '<i8'),
+])
+
+PSHELL_DTYPE = np.dtype([
+    ('PID', '<i8'), ('MID1', '<i8'), ('T', '<f8'), ('MID2', '<i8'),
+    ('BK', '<f8'), ('MID3', '<i8'), ('TS', '<f8'), ('NSM', '<f8'),
+    ('Z1', '<f8'), ('Z2', '<f8'), ('MID4', '<i8'),
+    ('DOMAIN_ID', '<i8'),
+])
+
+PSOLID_DTYPE = np.dtype([
+    ('PID', '<i8'), ('MID', '<i8'), ('CORDM', '<i8'),
+    ('IN', '<i8'), ('STRESS', '<i8'), ('ISOP', '<i8'),
+    ('FCTN', 'S4'), ('DOMAIN_ID', '<i8'),
+])
+
+PBUSH_DTYPE = np.dtype([
+    ('PID', '<i8'),
+    ('K', '<f8', (6,)), ('B', '<f8', (6,)), ('GE', '<f8', (6,)),
+    ('DOMAIN_ID', '<i8'),
+])
+
+# ═══════════════════════════════════════════════════════════════
+#  INPUT material dtype
+# ═══════════════════════════════════════════════════════════════
+
+MAT1_DTYPE = np.dtype([
+    ('MID', '<i8'), ('E', '<f8'), ('G', '<f8'), ('NU', '<f8'),
+    ('RHO', '<f8'), ('A', '<f8'), ('TREF', '<f8'), ('GE', '<f8'),
+    ('ST', '<f8'), ('SC', '<f8'), ('SS', '<f8'), ('MCSID', '<i8'),
+    ('DOMAIN_ID', '<i8'),
+])
+
+MAT2_DTYPE = np.dtype([
+    ('MID', '<i8'),
+    ('G11', '<f8'), ('G12', '<f8'), ('G13', '<f8'),
+    ('G22', '<f8'), ('G23', '<f8'), ('G33', '<f8'),
+    ('RHO', '<f8'),
+    ('A1', '<f8'), ('A2', '<f8'), ('A12', '<f8'),
+    ('TREF', '<f8'), ('GE', '<f8'),
+    ('ST', '<f8'), ('SC', '<f8'), ('SS', '<f8'),
+    ('MCSID', '<i8'), ('DOMAIN_ID', '<i8'),
+])
+
+MAT8_DTYPE = np.dtype([
+    ('MID', '<i8'),
+    ('E1', '<f8'), ('E2', '<f8'), ('NU12', '<f8'),
+    ('G12', '<f8'), ('G1Z', '<f8'), ('G2Z', '<f8'),
+    ('RHO', '<f8'),
+    ('A1', '<f8'), ('A2', '<f8'), ('TREF', '<f8'), ('GE', '<f8'),
+    ('XT', '<f8'), ('XC', '<f8'), ('YT', '<f8'), ('YC', '<f8'),
+    ('S', '<f8'), ('F12', '<f8'),
+    ('DOMAIN_ID', '<i8'),
+])
+
+
+# ═══════════════════════════════════════════════════════════════
 #  Domain yoneticisi
 # ═══════════════════════════════════════════════════════════════
 
@@ -169,6 +325,10 @@ class _Domains:
             if times is not None and itime < len(times):
                 rec['TIME_FREQ_EIGR'] = float(times[itime])
 
+        eigis = getattr(result, 'eigis', None)
+        if eigis is not None and itime < len(eigis):
+            rec['EIGI'] = float(eigis[itime])
+
         self._records.append(rec[0])
         return did
 
@@ -185,14 +345,336 @@ class _Domains:
 #  HDF5 yazim yardimcilari
 # ═══════════════════════════════════════════════════════════════
 
-def _save(h5, path, data_list, index_list):
+def _ds(h5, path, data, version=0):
+    """Dataset olustur ve version attribute ekle."""
+    ds = h5.create_dataset(path, data=data)
+    ds.attrs['version'] = np.int64(version)
+    return ds
+
+
+def _save(h5, path, data_list, index_list, version=0):
+    """Verileri birlestir, dataset ve INDEX tablosu olustur."""
     if not data_list:
         return
     data = np.concatenate(data_list)
-    h5.create_dataset(path, data=data)
+    _ds(h5, path, data, version)
     idx = np.array(index_list, dtype=INDEX_DTYPE)
-    h5.create_dataset(f'/INDEX{path}', data=idx)
+    _ds(h5, f'/INDEX{path}', idx, 0)
 
+
+# ═══════════════════════════════════════════════════════════════
+#  INPUT yazicilari
+# ═══════════════════════════════════════════════════════════════
+
+def _write_input_grids(h5, op2, _log):
+    """OP2 modelindeki GRID noktalarini /NASTRAN/INPUT/NODE/GRID'e yazar."""
+    nodes = getattr(op2, 'nodes', None) or getattr(op2, 'node_ids', None)
+    if nodes is None:
+        return
+
+    # pyNastran OP2: op2.nodes -> {nid: GRID_card}
+    if isinstance(nodes, dict) and len(nodes) > 0:
+        nids = sorted(nodes.keys())
+        n = len(nids)
+        arr = np.zeros(n, dtype=GRID_DTYPE)
+        for i, nid in enumerate(nids):
+            card = nodes[nid]
+            arr[i]['ID'] = nid
+            arr[i]['CP'] = card.cp
+            xyz = card.xyz
+            arr[i]['X'][0] = xyz[0]
+            arr[i]['X'][1] = xyz[1]
+            arr[i]['X'][2] = xyz[2]
+            arr[i]['CD'] = card.cd
+            arr[i]['PS'] = 0
+            arr[i]['SEID'] = card.seid
+            arr[i]['DOMAIN_ID'] = 1
+        _ds(h5, '/NASTRAN/INPUT/NODE/GRID', arr, 0)
+        _log(f'    INPUT/NODE/GRID: {n} dugum noktasi')
+
+
+def _write_input_elements(h5, op2, _log):
+    """OP2 modelindeki elemanlari /NASTRAN/INPUT/ELEMENT/{type}'a yazar."""
+    elements = getattr(op2, 'elements', None)
+    if not elements:
+        return
+
+    # Elemanlari tipe gore grupla
+    by_type = {}
+    for eid, elem in elements.items():
+        etype = elem.type
+        by_type.setdefault(etype, []).append(elem)
+
+    for etype, elems in sorted(by_type.items()):
+        elems_sorted = sorted(elems, key=lambda e: e.eid)
+        n = len(elems_sorted)
+        path = f'/NASTRAN/INPUT/ELEMENT/{etype}'
+
+        if etype == 'CQUAD4':
+            arr = np.zeros(n, dtype=CQUAD4_INPUT_DTYPE)
+            for i, e in enumerate(elems_sorted):
+                arr[i]['EID'] = e.eid
+                arr[i]['PID'] = e.pid
+                nids = e.node_ids
+                for j in range(min(4, len(nids))):
+                    arr[i]['G'][j] = nids[j] if nids[j] is not None else 0
+                arr[i]['THETA'] = getattr(e, 'theta_mcid', 0.0) if not isinstance(getattr(e, 'theta_mcid', 0), int) else 0.0
+                arr[i]['ZOFFS'] = getattr(e, 'zoffset', 0.0)
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif etype == 'CTRIA3':
+            arr = np.zeros(n, dtype=CTRIA3_INPUT_DTYPE)
+            for i, e in enumerate(elems_sorted):
+                arr[i]['EID'] = e.eid
+                arr[i]['PID'] = e.pid
+                nids = e.node_ids
+                for j in range(min(3, len(nids))):
+                    arr[i]['G'][j] = nids[j] if nids[j] is not None else 0
+                arr[i]['THETA'] = getattr(e, 'theta_mcid', 0.0) if not isinstance(getattr(e, 'theta_mcid', 0), int) else 0.0
+                arr[i]['ZOFFS'] = getattr(e, 'zoffset', 0.0)
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif etype in ('CROD', 'CONROD'):
+            dt = _elem_dtype(2)
+            arr = np.zeros(n, dtype=dt)
+            for i, e in enumerate(elems_sorted):
+                arr[i]['EID'] = e.eid
+                arr[i]['PID'] = getattr(e, 'pid', 0)
+                nids = e.node_ids
+                for j in range(min(2, len(nids))):
+                    arr[i]['G'][j] = nids[j]
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif etype == 'CBAR':
+            dt = _elem_dtype(2)
+            arr = np.zeros(n, dtype=dt)
+            for i, e in enumerate(elems_sorted):
+                arr[i]['EID'] = e.eid
+                arr[i]['PID'] = e.pid
+                nids = e.node_ids
+                for j in range(min(2, len(nids))):
+                    arr[i]['G'][j] = nids[j]
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif etype == 'CBEAM':
+            dt = _elem_dtype(2)
+            arr = np.zeros(n, dtype=dt)
+            for i, e in enumerate(elems_sorted):
+                arr[i]['EID'] = e.eid
+                arr[i]['PID'] = e.pid
+                nids = e.node_ids
+                for j in range(min(2, len(nids))):
+                    arr[i]['G'][j] = nids[j]
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif etype == 'CBUSH':
+            dt = _elem_dtype(2)
+            arr = np.zeros(n, dtype=dt)
+            for i, e in enumerate(elems_sorted):
+                arr[i]['EID'] = e.eid
+                arr[i]['PID'] = e.pid
+                nids = e.node_ids
+                for j in range(min(2, len(nids))):
+                    arr[i]['G'][j] = nids[j] if nids[j] is not None else 0
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif etype == 'CHEXA':
+            dt = _elem_dtype(8)
+            arr = np.zeros(n, dtype=dt)
+            for i, e in enumerate(elems_sorted):
+                arr[i]['EID'] = e.eid
+                arr[i]['PID'] = e.pid
+                nids = e.node_ids
+                for j in range(min(8, len(nids))):
+                    arr[i]['G'][j] = nids[j] if nids[j] is not None else 0
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif etype == 'CPENTA':
+            dt = _elem_dtype(6)
+            arr = np.zeros(n, dtype=dt)
+            for i, e in enumerate(elems_sorted):
+                arr[i]['EID'] = e.eid
+                arr[i]['PID'] = e.pid
+                nids = e.node_ids
+                for j in range(min(6, len(nids))):
+                    arr[i]['G'][j] = nids[j] if nids[j] is not None else 0
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif etype == 'CTETRA':
+            dt = _elem_dtype(4)
+            arr = np.zeros(n, dtype=dt)
+            for i, e in enumerate(elems_sorted):
+                arr[i]['EID'] = e.eid
+                arr[i]['PID'] = e.pid
+                nids = e.node_ids
+                for j in range(min(4, len(nids))):
+                    arr[i]['G'][j] = nids[j] if nids[j] is not None else 0
+                arr[i]['DOMAIN_ID'] = 1
+        else:
+            # Desteklenmeyen eleman tipi - atla
+            continue
+
+        _ds(h5, path, arr, 0)
+        _log(f'    INPUT/ELEMENT/{etype}: {n} eleman')
+
+
+def _write_input_properties(h5, op2, _log):
+    """OP2 modelindeki ozellikleri /NASTRAN/INPUT/PROPERTY/{type}'a yazar."""
+    properties = getattr(op2, 'properties', None)
+    if not properties:
+        return
+
+    by_type = {}
+    for pid, prop in properties.items():
+        ptype = prop.type
+        by_type.setdefault(ptype, []).append(prop)
+
+    for ptype, props in sorted(by_type.items()):
+        props_sorted = sorted(props, key=lambda p: p.pid)
+        n = len(props_sorted)
+        path = f'/NASTRAN/INPUT/PROPERTY/{ptype}'
+
+        if ptype == 'PROD':
+            arr = np.zeros(n, dtype=PROD_DTYPE)
+            for i, p in enumerate(props_sorted):
+                arr[i]['PID'] = p.pid
+                arr[i]['MID'] = p.mid
+                arr[i]['A'] = p.A
+                arr[i]['J'] = p.j
+                arr[i]['C'] = p.c
+                arr[i]['NSM'] = p.nsm
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif ptype == 'PBAR':
+            arr = np.zeros(n, dtype=PBAR_DTYPE)
+            for i, p in enumerate(props_sorted):
+                arr[i]['PID'] = p.pid
+                arr[i]['MID'] = p.mid
+                arr[i]['A'] = p.A
+                arr[i]['I1'] = p.i1
+                arr[i]['I2'] = p.i2
+                arr[i]['J'] = p.j
+                arr[i]['NSM'] = p.nsm
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif ptype == 'PBEAM':
+            arr = np.zeros(n, dtype=PBEAM_DTYPE)
+            for i, p in enumerate(props_sorted):
+                arr[i]['PID'] = p.pid
+                arr[i]['MID'] = p.mid
+                arr[i]['A'] = p.A if hasattr(p, 'A') else getattr(p, 'area', [0.0])[0]
+                arr[i]['I1'] = getattr(p, 'i1', getattr(p, 'i1a', 0.0))
+                arr[i]['I2'] = getattr(p, 'i2', getattr(p, 'i2a', 0.0))
+                arr[i]['I12'] = getattr(p, 'i12', getattr(p, 'i12a', 0.0))
+                arr[i]['J'] = p.j
+                arr[i]['NSM'] = getattr(p, 'nsm', getattr(p, 'nsm', [0.0])[0] if isinstance(getattr(p, 'nsm', 0), list) else getattr(p, 'nsm', 0.0))
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif ptype == 'PSHELL':
+            arr = np.zeros(n, dtype=PSHELL_DTYPE)
+            for i, p in enumerate(props_sorted):
+                arr[i]['PID'] = p.pid
+                arr[i]['MID1'] = p.mid1 if p.mid1 is not None else 0
+                arr[i]['T'] = p.t if p.t is not None else 0.0
+                arr[i]['MID2'] = p.mid2 if p.mid2 is not None else -1
+                arr[i]['BK'] = p.twelveIt3 if hasattr(p, 'twelveIt3') else 1.0
+                arr[i]['MID3'] = p.mid3 if p.mid3 is not None else -1
+                arr[i]['TS'] = p.tst if hasattr(p, 'tst') else 0.833333
+                arr[i]['NSM'] = p.nsm
+                arr[i]['Z1'] = p.z1 if p.z1 is not None else 0.0
+                arr[i]['Z2'] = p.z2 if p.z2 is not None else 0.0
+                arr[i]['MID4'] = p.mid4 if p.mid4 is not None else -1
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif ptype == 'PSOLID':
+            arr = np.zeros(n, dtype=PSOLID_DTYPE)
+            for i, p in enumerate(props_sorted):
+                arr[i]['PID'] = p.pid
+                arr[i]['MID'] = p.mid
+                arr[i]['CORDM'] = getattr(p, 'cordm', 0)
+                arr[i]['IN'] = getattr(p, 'integ', 0) or 0
+                arr[i]['STRESS'] = getattr(p, 'stress', 0) or 0
+                arr[i]['ISOP'] = getattr(p, 'isop', 0) or 0
+                arr[i]['FCTN'] = b'SMEC'
+                arr[i]['DOMAIN_ID'] = 1
+
+        elif ptype == 'PBUSH':
+            arr = np.zeros(n, dtype=PBUSH_DTYPE)
+            for i, p in enumerate(props_sorted):
+                arr[i]['PID'] = p.pid
+                Ki = getattr(p, 'Ki', None)
+                Bi = getattr(p, 'Bi', None)
+                GEi = getattr(p, 'GEi', None)
+                if Ki is not None:
+                    for j in range(min(6, len(Ki))):
+                        if Ki[j] is not None:
+                            arr[i]['K'][j] = Ki[j]
+                if Bi is not None:
+                    for j in range(min(6, len(Bi))):
+                        if Bi[j] is not None:
+                            arr[i]['B'][j] = Bi[j]
+                if GEi is not None:
+                    for j in range(min(6, len(GEi))):
+                        if GEi[j] is not None:
+                            arr[i]['GE'][j] = GEi[j]
+                arr[i]['DOMAIN_ID'] = 1
+        else:
+            continue
+
+        _ds(h5, path, arr, 0)
+        _log(f'    INPUT/PROPERTY/{ptype}: {n} ozellik')
+
+
+def _write_input_materials(h5, op2, _log):
+    """OP2 modelindeki malzemeleri /NASTRAN/INPUT/MATERIAL/{type}'a yazar."""
+    materials = getattr(op2, 'materials', None)
+    if not materials:
+        return
+
+    by_type = {}
+    for mid, mat in materials.items():
+        mtype = mat.type
+        by_type.setdefault(mtype, []).append(mat)
+
+    for mtype, mats in sorted(by_type.items()):
+        mats_sorted = sorted(mats, key=lambda m: m.mid)
+        n = len(mats_sorted)
+        path = f'/NASTRAN/INPUT/MATERIAL/{mtype}'
+
+        if mtype == 'MAT1':
+            arr = np.zeros(n, dtype=MAT1_DTYPE)
+            for i, m in enumerate(mats_sorted):
+                arr[i]['MID'] = m.mid
+                arr[i]['E'] = m.e if m.e is not None else 0.0
+                arr[i]['G'] = m.g if m.g is not None else 0.0
+                arr[i]['NU'] = m.nu if m.nu is not None else 0.0
+                arr[i]['RHO'] = m.rho
+                arr[i]['A'] = m.a if m.a is not None else 0.0
+                arr[i]['TREF'] = m.tref
+                arr[i]['GE'] = m.ge
+                arr[i]['ST'] = getattr(m, 'St', 0.0) or 0.0
+                arr[i]['SC'] = getattr(m, 'Sc', 0.0) or 0.0
+                arr[i]['SS'] = getattr(m, 'Ss', 0.0) or 0.0
+                arr[i]['MCSID'] = getattr(m, 'mcsid', 0)
+                arr[i]['DOMAIN_ID'] = 1
+        else:
+            continue
+
+        _ds(h5, path, arr, 0)
+        _log(f'    INPUT/MATERIAL/{mtype}: {n} malzeme')
+
+
+def _write_input_domains(h5):
+    """INPUT domains tablosu (model-level domain)."""
+    arr = np.zeros(1, dtype=INPUT_DOMAIN_DTYPE)
+    arr[0]['ID'] = 1
+    arr[0]['SE'] = 0
+    _ds(h5, '/NASTRAN/INPUT/DOMAINS', arr, 0)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Nodal sonuc yazici
+# ═══════════════════════════════════════════════════════════════
 
 def _write_nodal(h5, name, result_dict, dom):
     rows_list, idx_list, pos = [], [], 0
@@ -212,8 +694,12 @@ def _write_nodal(h5, name, result_dict, dom):
             rows_list.append(arr)
             idx_list.append((did, pos, n))
             pos += n
-    _save(h5, f'/NASTRAN/RESULT/NODAL/{name}', rows_list, idx_list)
+    _save(h5, f'/NASTRAN/RESULT/NODAL/{name}', rows_list, idx_list, version=1)
 
+
+# ═══════════════════════════════════════════════════════════════
+#  Plate stress/strain yazici
+# ═══════════════════════════════════════════════════════════════
 
 def _write_plate_stress(h5, msc_name, result_dict, dom, category):
     rows_list, idx_list, pos = [], [], 0
@@ -247,6 +733,10 @@ def _write_plate_stress(h5, msc_name, result_dict, dom, category):
           rows_list, idx_list)
 
 
+# ═══════════════════════════════════════════════════════════════
+#  1D element stress/strain yazici
+# ═══════════════════════════════════════════════════════════════
+
 def _write_1d_result(h5, path, dtype, col_map, result_dict, dom):
     rows_list, idx_list, pos = [], [], 0
     for sc in sorted(result_dict):
@@ -273,6 +763,10 @@ def _write_1d_result(h5, path, dtype, col_map, result_dict, dom):
             pos += n
     _save(h5, path, rows_list, idx_list)
 
+
+# ═══════════════════════════════════════════════════════════════
+#  Solid element stress/strain yazici
+# ═══════════════════════════════════════════════════════════════
 
 def _write_solid_stress(h5, path, npts, dtype, result_dict, dom):
     rows_list, idx_list, pos = [], [], 0
@@ -307,6 +801,126 @@ def _write_solid_stress(h5, path, npts, dtype, result_dict, dom):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  Eigenvalue summary yazici
+# ═══════════════════════════════════════════════════════════════
+
+def _write_eigenvalue_summary(h5, op2, dom, _log):
+    """Modal analiz varsa /NASTRAN/RESULT/SUMMARY/EIGENVALUE yazar."""
+    eig_dict = op2.eigenvectors
+    if not eig_dict:
+        return
+
+    rows_list = []
+    idx_list = []
+    pos = 0
+
+    for sc in sorted(eig_dict):
+        res = eig_dict[sc]
+        modes = getattr(res, 'modes', None)
+        eigrs = getattr(res, 'eigrs', None)
+        if modes is None or eigrs is None:
+            continue
+
+        n = len(modes)
+        arr = np.zeros(n, dtype=EIGENVALUE_DTYPE)
+
+        for i in range(n):
+            did = dom.get_id(sc, i, res)
+            eig = float(eigrs[i])
+            omega = np.sqrt(abs(eig)) if eig >= 0 else -np.sqrt(abs(eig))
+            freq = abs(omega) / (2.0 * np.pi)
+
+            arr[i]['MODE'] = int(modes[i])
+            arr[i]['ORDER'] = int(modes[i])
+            arr[i]['EIGEN'] = eig
+            arr[i]['OMEGA'] = omega
+            arr[i]['FREQ'] = freq
+            arr[i]['MASS'] = 0.0
+            arr[i]['STIFF'] = 0.0
+            arr[i]['DOMAIN_ID'] = did
+
+        rows_list.append(arr)
+        idx_list.append((1, pos, n))
+        pos += n
+
+    _save(h5, '/NASTRAN/RESULT/SUMMARY/EIGENVALUE', rows_list, idx_list)
+    if rows_list:
+        total = sum(len(a) for a in rows_list)
+        _log(f'    SUMMARY/EIGENVALUE: {total} mod')
+
+
+# ═══════════════════════════════════════════════════════════════
+#  BEAM stress/force yazicilari
+# ═══════════════════════════════════════════════════════════════
+
+def _write_beam_stress(h5, path, result_dict, dom, dtype=BEAM_STRESS_DTYPE):
+    """CBEAM stress/strain: her eleman icin birden fazla station."""
+    rows_list, idx_list, pos = [], [], 0
+    for sc in sorted(result_dict):
+        res = result_dict[sc]
+        en = res.element_node
+        ntimes = res.data.shape[0]
+        for it in range(ntimes):
+            did = dom.get_id(sc, it, res)
+            n = len(en)
+            d = res.data[it]
+            arr = np.zeros(n, dtype=dtype)
+            arr['EID'] = en[:, 0]
+            arr['NID'] = en[:, 1]
+            ncols = d.shape[1]
+            col_names = ['LONG', 'LS1', 'LS2', 'LS3', 'LS4', 'SMAX', 'SMIN']
+            for ci, fname in enumerate(col_names):
+                if ci < ncols:
+                    arr[fname] = d[:, ci]
+            arr['DOMAIN_ID'] = did
+            rows_list.append(arr)
+            idx_list.append((did, pos, n))
+            pos += n
+    _save(h5, path, rows_list, idx_list)
+
+
+def _write_beam_force(h5, path, result_dict, dom):
+    """CBEAM force: end-A ve end-B birlikte."""
+    rows_list, idx_list, pos = [], [], 0
+    for sc in sorted(result_dict):
+        res = result_dict[sc]
+        if hasattr(res, 'element_node') and res.element_node is not None:
+            en = res.element_node
+            ntimes = res.data.shape[0]
+            npts_per_elem = 2  # End-A, End-B
+            n_elem = len(en) // npts_per_elem
+            for it in range(ntimes):
+                did = dom.get_id(sc, it, res)
+                d = res.data[it]
+                arr = np.zeros(n_elem, dtype=BEAM_FORCE_DTYPE)
+                for ie in range(n_elem):
+                    ia = ie * npts_per_elem
+                    ib = ia + 1
+                    arr[ie]['EID'] = en[ia, 0]
+                    arr[ie]['NIDA'] = en[ia, 1]
+                    if d.shape[1] >= 6:
+                        arr[ie]['BM1A'] = d[ia, 0]
+                        arr[ie]['BM2A'] = d[ia, 1]
+                        arr[ie]['TS1A'] = d[ia, 2]
+                        arr[ie]['TS2A'] = d[ia, 3]
+                        arr[ie]['AFA'] = d[ia, 4]
+                        arr[ie]['TRQA'] = d[ia, 5]
+                    arr[ie]['NIDB'] = en[ib, 1]
+                    if d.shape[1] >= 6:
+                        arr[ie]['BM1B'] = d[ib, 0]
+                        arr[ie]['BM2B'] = d[ib, 1]
+                        arr[ie]['TS1B'] = d[ib, 2]
+                        arr[ie]['TS2B'] = d[ib, 3]
+                        arr[ie]['AFB'] = d[ib, 4]
+                        arr[ie]['TRQB'] = d[ib, 5]
+                    arr[ie]['DOMAIN_ID'] = did
+                rows_list.append(arr)
+                idx_list.append((did, pos, n_elem))
+                pos += n_elem
+    _save(h5, path, rows_list, idx_list)
+
+
+# ═══════════════════════════════════════════════════════════════
 #  Ana MSC HDF5 donusum fonksiyonu
 # ═══════════════════════════════════════════════════════════════
 
@@ -319,6 +933,24 @@ def write_msc_h5(op2, h5_path, log=None):
     dom = _Domains()
 
     with h5py.File(h5_path, 'w') as h5:
+
+        # ── Root SCHEMA attribute (Patran bunu kontrol eder) ──
+        h5.attrs['SCHEMA'] = MSC_SCHEMA_VERSION
+
+        # ════════════════════════════════════════════════════
+        #  INPUT bolumu - model geometrisi
+        # ════════════════════════════════════════════════════
+        _log('  INPUT bolumu yaziliyor...')
+        _write_input_domains(h5)
+        _write_input_grids(h5, op2, _log)
+        _write_input_elements(h5, op2, _log)
+        _write_input_properties(h5, op2, _log)
+        _write_input_materials(h5, op2, _log)
+
+        # ════════════════════════════════════════════════════
+        #  RESULT bolumu - analiz sonuclari
+        # ════════════════════════════════════════════════════
+        _log('  RESULT bolumu yaziliyor...')
 
         # Nodal sonuclar
         for name, rdict in [
@@ -337,6 +969,8 @@ def write_msc_h5(op2, h5_path, log=None):
         # Elemental stress & strain
         for category in ('STRESS', 'STRAIN'):
             cl = category.lower()
+
+            # Plate
             for elem, attr in [('QUAD4', f'cquad4_{cl}'),
                                 ('TRIA3', f'ctria3_{cl}')]:
                 rdict = getattr(op2, attr, {})
@@ -344,6 +978,7 @@ def write_msc_h5(op2, h5_path, log=None):
                     _log(f'    Elemental/{category}/{elem}: {len(rdict)} subcase')
                     _write_plate_stress(h5, elem, rdict, dom, category)
 
+            # 1D
             for elem, attr, dtype, cols in [
                 ('BAR', f'cbar_{cl}', BAR_STRESS_DTYPE, BAR_STRESS_COLS),
                 ('ROD', f'crod_{cl}', ROD_STRESS_DTYPE, ROD_STRESS_COLS),
@@ -356,6 +991,15 @@ def write_msc_h5(op2, h5_path, log=None):
                     _write_1d_result(h5, f'/NASTRAN/RESULT/ELEMENTAL/{category}/{elem}',
                                      dtype, cols, rdict, dom)
 
+            # BEAM stress/strain
+            beam_attr = f'cbeam_{cl}'
+            beam_rdict = getattr(op2, beam_attr, {})
+            if beam_rdict:
+                _log(f'    Elemental/{category}/BEAM: {len(beam_rdict)} subcase')
+                _write_beam_stress(h5, f'/NASTRAN/RESULT/ELEMENTAL/{category}/BEAM',
+                                   beam_rdict, dom)
+
+            # Solid
             for elem, attr, npts, dtype in [
                 ('HEXA', f'chexa_{cl}', 9, HEXA_STRESS_DTYPE),
                 ('PENTA', f'cpenta_{cl}', 7, PENTA_STRESS_DTYPE),
@@ -380,10 +1024,20 @@ def write_msc_h5(op2, h5_path, log=None):
                 _write_1d_result(h5, f'/NASTRAN/RESULT/ELEMENTAL/ELEMENT_FORCE/{elem}',
                                  dtype, cols, rdict, dom)
 
-        # DOMAINS tablosu
+        # BEAM force
+        beam_force_rdict = getattr(op2, 'cbeam_force', {})
+        if beam_force_rdict:
+            _log(f'    ElementForce/BEAM: {len(beam_force_rdict)} subcase')
+            _write_beam_force(h5, '/NASTRAN/RESULT/ELEMENTAL/ELEMENT_FORCE/BEAM',
+                              beam_force_rdict, dom)
+
+        # Eigenvalue summary (modal analiz)
+        _write_eigenvalue_summary(h5, op2, dom, _log)
+
+        # RESULT DOMAINS tablosu
         domains_arr = dom.to_array()
         if len(domains_arr) > 0:
-            h5.create_dataset('/NASTRAN/RESULT/DOMAINS', data=domains_arr)
+            _ds(h5, '/NASTRAN/RESULT/DOMAINS', domains_arr, 0)
         _log(f'    Toplam {len(dom._records)} domain yazildi')
 
 
@@ -394,7 +1048,7 @@ def write_msc_h5(op2, h5_path, log=None):
 class ConverterApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("OP2 -> H5 Donusturucu  (MSC Nastran Formati)")
+        self.title("OP2 -> H5 Donusturucu  (MSC Nastran / Patran Formati)")
         self.geometry("720x540")
         self.resizable(True, True)
         self.minsize(560, 440)
@@ -403,7 +1057,6 @@ class ConverterApp(tk.Tk):
         self._converting = False
         self._build_ui()
 
-    # ── UI ──
     def _build_ui(self):
         pad = {"padx": 8, "pady": 4}
 
@@ -546,7 +1199,7 @@ class ConverterApp(tk.Tk):
                 self.after(0, self._log, f"  Okunuyor: {op2_path}")
                 op2_model = OP2()
                 op2_model.read_op2(op2_path)
-                self.after(0, self._log, f"  Yaziliyor (MSC formati): {h5_path}")
+                self.after(0, self._log, f"  Yaziliyor (MSC/Patran formati): {h5_path}")
                 write_msc_h5(op2_model, h5_path,
                              log=lambda msg: self.after(0, self._log, msg))
                 self.after(0, self._log, f"  Basarili: {h5_path}")
