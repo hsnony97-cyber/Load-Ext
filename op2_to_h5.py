@@ -17,6 +17,7 @@ import glob
 import traceback
 
 from pyNastran.op2.op2 import OP2
+from msc_h5_writer import write_msc_h5
 
 
 def select_op2_files_gui():
@@ -89,10 +90,10 @@ def convert_op2_to_h5(op2_path, output_dir):
         traceback.print_exc()
         return None
 
-    print(f"  Yaziliyor: {h5_path}")
+    print(f"  Yaziliyor (MSC Nastran formati): {h5_path}")
 
     try:
-        op2_model.export_hdf5_filename(h5_path)
+        write_msc_h5(op2_model, h5_path, log=print)
     except Exception:
         print(f"  HATA: HDF5 dosyasi yazilamadi -> {h5_path}")
         traceback.print_exc()

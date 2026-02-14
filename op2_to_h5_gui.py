@@ -16,6 +16,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from pyNastran.op2.op2 import OP2
+from msc_h5_writer import write_msc_h5
 
 
 class ConverterApp(tk.Tk):
@@ -209,8 +210,9 @@ class ConverterApp(tk.Tk):
                 op2_model = OP2()
                 op2_model.read_op2(op2_path)
 
-                self.after(0, self._log, f"  Yaziliyor: {h5_path}")
-                op2_model.export_hdf5_filename(h5_path)
+                self.after(0, self._log, f"  Yaziliyor (MSC formati): {h5_path}")
+                write_msc_h5(op2_model, h5_path,
+                             log=lambda msg: self.after(0, self._log, msg))
 
                 self.after(0, self._log, f"  Basarili: {h5_path}")
                 success += 1
