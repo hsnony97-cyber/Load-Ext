@@ -210,7 +210,7 @@ class ConverterApp(tk.Tk):
                 op2_model.read_op2(op2_path)
 
                 self.after(0, self._log, f"  Yaziliyor: {h5_path}")
-                op2_model.export_to_hdf5(h5_path)
+                op2_model.export_hdf5_filename(h5_path)
 
                 self.after(0, self._log, f"  Basarili: {h5_path}")
                 success += 1

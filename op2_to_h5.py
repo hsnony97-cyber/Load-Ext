@@ -92,7 +92,7 @@ def convert_op2_to_h5(op2_path, output_dir):
     print(f"  Yaziliyor: {h5_path}")
 
     try:
-        op2_model.export_to_hdf5(h5_path)
+        op2_model.export_hdf5_filename(h5_path)
     except Exception:
         print(f"  HATA: HDF5 dosyasi yazilamadi -> {h5_path}")
         traceback.print_exc()
