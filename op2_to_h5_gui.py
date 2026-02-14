@@ -163,6 +163,15 @@ QUAD4_FORCE_DTYPE = np.dtype([
     ('DOMAIN_ID', '<i8'),
 ])
 
+# --- QUAD4 corner stress (QUAD_CN) ---
+# MSC Nastran STRESS(CORNER) isteginde QUAD_CN olarak yazar
+QUAD_CN_STRESS_DTYPE = np.dtype([
+    ('EID', '<i8'), ('TERM', 'S4'), ('GRID', '<i8'),
+    ('FD1', '<f8'), ('X1', '<f8'), ('Y1', '<f8'), ('XY1', '<f8'),
+    ('FD2', '<f8'), ('X2', '<f8'), ('Y2', '<f8'), ('XY2', '<f8'),
+    ('DOMAIN_ID', '<i8'),
+])
+
 # ── Kolon esleme tablolari ──
 BAR_STRESS_COLS = [
     ('X1A', 0), ('X2A', 1), ('X3A', 2), ('X4A', 3),
@@ -298,6 +307,13 @@ class _Domains:
         self._map = {}
         self._records = []
 
+    # SOL tipleri icin ANALYSIS kodlari
+    _SOL_ANALYSIS = {
+        101: 1, 103: 2, 105: 7, 106: 10, 107: 9,
+        108: 5, 109: 6, 110: 9, 111: 5, 112: 6,
+        144: 1, 200: 1,
+    }
+
     def get_id(self, subcase, itime, result):
         key = (subcase, itime)
         if key in self._map:
@@ -310,8 +326,16 @@ class _Domains:
         rec['ID'] = did
         rec['SUBCASE'] = subcase
 
-        if hasattr(result, 'analysis_code'):
+        # ANALYSIS kodu: oncelikle result.analysis_code, yoksa SOL tipinden cikart
+        if hasattr(result, 'analysis_code') and result.analysis_code:
             rec['ANALYSIS'] = int(result.analysis_code)
+        else:
+            # SOL101 -> ANALYSIS=1 (statics)
+            sol = getattr(result, 'sol', None) or getattr(result, 'solution', None)
+            if sol and sol in self._SOL_ANALYSIS:
+                rec['ANALYSIS'] = self._SOL_ANALYSIS[sol]
+            else:
+                rec['ANALYSIS'] = 1  # varsayilan: statik
 
         modes = getattr(result, 'modes', None)
         if modes is not None and itime < len(modes):
@@ -730,6 +754,69 @@ def _write_plate_stress(h5, msc_name, result_dict, dom, category):
             idx_list.append((did, pos, n_elem))
             pos += n_elem
     _save(h5, f'/NASTRAN/RESULT/ELEMENTAL/{category}/{msc_name}',
+          rows_list, idx_list)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  QUAD_CN corner stress yazici (STRESS(CORNER) ciktisi)
+# ═══════════════════════════════════════════════════════════════
+
+def _write_quad_cn_stress(h5, result_dict, dom, category):
+    """CQUAD4 corner stress: center + 4 kose = 5 satir/element."""
+    rows_list, idx_list, pos = [], [], 0
+    for sc in sorted(result_dict):
+        res = result_dict[sc]
+        en = res.element_node
+        ntimes = res.data.shape[0]
+        nnodes = getattr(res, 'nnodes_per_element', None)
+        if nnodes is None:
+            nnodes = getattr(res, 'nnodes', 1)
+        if nnodes <= 1:
+            continue  # center-only, QUAD_CN degil
+        rpe = 2 * nnodes  # top+bot per node => 2*5=10 for QUAD4 corner
+        n_elem = len(en) // rpe
+        npts = nnodes  # 5 (center + 4 corners)
+        total_rows = n_elem * npts * 2  # top & bottom per point
+
+        for it in range(ntimes):
+            did = dom.get_id(sc, it, res)
+            d = res.data[it]
+            n_out = n_elem * npts * 2
+            arr = np.zeros(n_out, dtype=QUAD_CN_STRESS_DTYPE)
+            row = 0
+            for ie in range(n_elem):
+                base = ie * rpe
+                eid = en[base, 0]
+                for ip in range(npts):
+                    top_idx = base + ip * 2
+                    bot_idx = top_idx + 1
+                    grid_id = en[top_idx, 1]
+                    term_top = b'Z1' if ip == 0 else b'Z1'
+                    term_bot = b'Z2' if ip == 0 else b'Z2'
+                    # Top surface
+                    arr[row]['EID'] = eid
+                    arr[row]['TERM'] = term_top
+                    arr[row]['GRID'] = grid_id
+                    arr[row]['FD1'] = d[top_idx, 0]
+                    arr[row]['X1'] = d[top_idx, 1]
+                    arr[row]['Y1'] = d[top_idx, 2]
+                    arr[row]['XY1'] = d[top_idx, 3]
+                    arr[row]['DOMAIN_ID'] = did
+                    row += 1
+                    # Bottom surface
+                    arr[row]['EID'] = eid
+                    arr[row]['TERM'] = term_bot
+                    arr[row]['GRID'] = grid_id
+                    arr[row]['FD2'] = d[bot_idx, 0]
+                    arr[row]['X2'] = d[bot_idx, 1]
+                    arr[row]['Y2'] = d[bot_idx, 2]
+                    arr[row]['XY2'] = d[bot_idx, 3]
+                    arr[row]['DOMAIN_ID'] = did
+                    row += 1
+            rows_list.append(arr[:row])
+            idx_list.append((did, pos, row))
+            pos += row
+    _save(h5, f'/NASTRAN/RESULT/ELEMENTAL/{category}/QUAD_CN',
           rows_list, idx_list)
 
 
