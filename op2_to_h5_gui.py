@@ -370,10 +370,15 @@ class _Domains:
 # ═══════════════════════════════════════════════════════════════
 
 def _ds(h5, path, data, version=0):
-    """Dataset olustur, version attribute ekle ve INDEX mirror'u olustur."""
+    """Dataset olustur ve version attribute ekle."""
     ds = h5.create_dataset(path, data=data)
     ds.attrs['version'] = np.int64(version)
-    # INPUT datasetleri icin INDEX mirror tablosu olustur
+    return ds
+
+
+def _ds_with_index(h5, path, data, version=0):
+    """Dataset olustur, version attribute ekle ve INPUT icin INDEX mirror'u olustur."""
+    ds = _ds(h5, path, data, version)
     index_path = f'/INDEX{path}'
     if index_path not in h5:
         n = len(data) if hasattr(data, '__len__') else 1
@@ -420,7 +425,7 @@ def _write_input_grids(h5, op2, _log):
             arr[i]['PS'] = 0
             arr[i]['SEID'] = card.seid
             arr[i]['DOMAIN_ID'] = 1
-        _ds(h5, '/NASTRAN/INPUT/NODE/GRID', arr, 0)
+        _ds_with_index(h5, '/NASTRAN/INPUT/NODE/GRID', arr, 0)
         _log(f'    INPUT/NODE/GRID: {n} dugum noktasi')
 
 
@@ -545,7 +550,7 @@ def _write_input_elements(h5, op2, _log):
             # Desteklenmeyen eleman tipi - atla
             continue
 
-        _ds(h5, path, arr, 0)
+        _ds_with_index(h5, path, arr, 0)
         _log(f'    INPUT/ELEMENT/{etype}: {n} eleman')
 
 
@@ -652,7 +657,7 @@ def _write_input_properties(h5, op2, _log):
         else:
             continue
 
-        _ds(h5, path, arr, 0)
+        _ds_with_index(h5, path, arr, 0)
         _log(f'    INPUT/PROPERTY/{ptype}: {n} ozellik')
 
 
@@ -736,7 +741,7 @@ def _write_input_materials(h5, op2, _log):
         else:
             continue
 
-        _ds(h5, path, arr, 0)
+        _ds_with_index(h5, path, arr, 0)
         _log(f'    INPUT/MATERIAL/{mtype}: {n} malzeme')
 
 
@@ -745,7 +750,7 @@ def _write_input_domains(h5):
     arr = np.zeros(1, dtype=INPUT_DOMAIN_DTYPE)
     arr[0]['ID'] = 1
     arr[0]['SE'] = 0
-    _ds(h5, '/NASTRAN/INPUT/DOMAINS', arr, 0)
+    _ds_with_index(h5, '/NASTRAN/INPUT/DOMAINS', arr, 0)
 
 
 # ═══════════════════════════════════════════════════════════════
