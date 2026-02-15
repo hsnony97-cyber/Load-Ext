@@ -1196,7 +1196,7 @@ def write_msc_h5(op2, h5_path, log=None):
         # RESULT DOMAINS tablosu
         domains_arr = dom.to_array()
         if len(domains_arr) > 0:
-            _ds(h5, '/NASTRAN/RESULT/DOMAINS', domains_arr, 0)
+            _ds_with_index(h5, '/NASTRAN/RESULT/DOMAINS', domains_arr, 0)
         _log(f'    Toplam {len(dom._records)} domain yazildi')
 
 
