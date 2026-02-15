@@ -16,7 +16,7 @@ import sys
 import glob
 import traceback
 
-from pyNastran.op2.op2 import OP2
+from pyNastran.op2.op2_geom import OP2Geom
 from msc_h5_writer import write_msc_h5
 
 
@@ -83,7 +83,7 @@ def convert_op2_to_h5(op2_path, output_dir):
     print(f"  Okunuyor : {op2_path}")
 
     try:
-        op2_model = OP2()
+        op2_model = OP2Geom()
         op2_model.read_op2(op2_path)
     except Exception:
         print(f"  HATA: OP2 dosyasi okunamadi -> {op2_path}")

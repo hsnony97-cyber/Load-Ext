@@ -35,7 +35,7 @@ from tkinter import ttk, filedialog, messagebox
 
 import numpy as np
 import h5py
-from pyNastran.op2.op2 import OP2
+from pyNastran.op2.op2_geom import OP2Geom
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1809,9 +1809,38 @@ class ConverterApp(tk.Tk):
             basename = os.path.splitext(name)[0]
             h5_path = os.path.join(output_dir, basename + ".h5")
             try:
-                self.after(0, self._log, f"  Okunuyor: {op2_path}")
-                op2_model = OP2()
+                self.after(0, self._log, f"  Okunuyor (geometri+sonuc): {op2_path}")
+                op2_model = OP2Geom()
                 op2_model.read_op2(op2_path)
+                # Bulunan verileri logla
+                n_nodes = len(getattr(op2_model, 'nodes', {}) or {})
+                n_elems = len(getattr(op2_model, 'elements', {}) or {})
+                n_props = len(getattr(op2_model, 'properties', {}) or {})
+                n_mats = len(getattr(op2_model, 'materials', {}) or {})
+                n_rigid = len(getattr(op2_model, 'rigid_elements', {}) or {})
+                n_coords = len(getattr(op2_model, 'coords', {}) or {})
+                n_loads = len(getattr(op2_model, 'loads', {}) or {})
+                self.after(0, self._log,
+                    f"  Geometri: {n_nodes} dugum, {n_elems} eleman, "
+                    f"{n_props} ozellik, {n_mats} malzeme, "
+                    f"{n_rigid} rigid, {n_coords} coord, {n_loads} yuk")
+                # Sonuc verilerini logla
+                result_info = []
+                for rname, rattr in [
+                    ('disp', 'displacements'), ('spc', 'spc_forces'),
+                    ('applied', 'load_vectors'), ('gpf', 'grid_point_forces'),
+                    ('bar_f', 'cbar_force'), ('rod_f', 'crod_force'),
+                    ('bush_f', 'cbush_force'), ('quad4_f', 'cquad4_force'),
+                    ('tria3_f', 'ctria3_force'),
+                    ('bar_s', 'cbar_stress'), ('quad4_s', 'cquad4_stress'),
+                ]:
+                    rd = getattr(op2_model, rattr, {})
+                    if rd:
+                        result_info.append(f'{rname}={len(rd)}')
+                if result_info:
+                    self.after(0, self._log, f"  Sonuclar: {', '.join(result_info)}")
+                else:
+                    self.after(0, self._log, f"  Sonuclar: sadece nodal veriler")
                 self.after(0, self._log, f"  Yaziliyor (MSC/Patran formati): {h5_path}")
                 write_msc_h5(op2_model, h5_path,
                              log=lambda msg: self.after(0, self._log, msg))
